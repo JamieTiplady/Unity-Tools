@@ -77,7 +77,7 @@ public class ProjectTextureQualityChecker : EditorWindow
         GUILayout.Label("Name", GUILayout.Width(150));
         GUILayout.Label("Usage", GUILayout.Width(60));
         GUILayout.Label("Size (MB)", GUILayout.Width(70));
-        GUILayout.Label("Dimension", GUILayout.Width(100));
+        GUILayout.Label("File Dimensions", GUILayout.Width(100));
         GUILayout.Label("Format", GUILayout.Width(80));
         GUILayout.Label("Mips", GUILayout.Width(50));
         GUILayout.Label("NPoT", GUILayout.Width(50));
