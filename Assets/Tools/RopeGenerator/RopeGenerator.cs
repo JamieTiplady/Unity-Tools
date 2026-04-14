@@ -29,7 +29,12 @@ public class RopeGenerator : MonoBehaviour
     private void OnEnable()
     {
         meshFilter = GetComponent<MeshFilter>();
-        ropeMesh = new Mesh { name = "RopeMesh" };
+        
+        // Ensure we don't overwrite an existing mesh reference
+        if (ropeMesh == null)
+        {
+            ropeMesh = new Mesh { name = "RopeMesh" };
+        }
         meshFilter.mesh = ropeMesh;
 
         Spline.Changed += OnSplineChanged;
@@ -43,6 +48,14 @@ public class RopeGenerator : MonoBehaviour
     public void GenerateRope()
     {
         if (splineContainer == null) return;
+
+        // --- THE FIX: Create the mesh if OnValidate ran before OnEnable ---
+        if (ropeMesh == null)
+        {
+            ropeMesh = new Mesh { name = "RopeMesh" };
+            if (meshFilter == null) meshFilter = GetComponent<MeshFilter>();
+            if (meshFilter != null) meshFilter.mesh = ropeMesh;
+        }
 
         var spline = splineContainer.Spline;
         
