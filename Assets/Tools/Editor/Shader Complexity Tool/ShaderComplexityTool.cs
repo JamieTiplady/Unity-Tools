@@ -2,7 +2,7 @@ using UnityEngine;
 using UnityEditor;
 using System.Collections.Generic;
 using System.Linq;
-using UnityEngine.Profiling; // Added for memory profiling
+using UnityEngine.Profiling;
 
 public class ShaderComplexityTool : EditorWindow
 {
@@ -15,9 +15,8 @@ public class ShaderComplexityTool : EditorWindow
         public Material Mat;
         public string ShaderName;
         public int PassCount;
-        public int KeywordCount;
         public int TextureCount;
-        public float TextureMemoryMB; // <-- NEW: Stores total texture memory
+        public float TextureMemoryMB; 
         public bool IsTransparent;
     }
 
@@ -54,7 +53,6 @@ public class ShaderComplexityTool : EditorWindow
     {
         scannedMaterials.Clear();
         
-        // Find all renderers in the active scene
         Renderer[] sceneRenderers = FindObjectsOfType<Renderer>();
         HashSet<Material> uniqueMaterials = new HashSet<Material>();
 
@@ -66,13 +64,11 @@ public class ShaderComplexityTool : EditorWindow
             }
         }
 
-        // Analyze each unique material
         foreach (Material mat in uniqueMaterials)
         {
             scannedMaterials.Add(AnalyzeMaterial(mat));
         }
 
-        // Sort by highest Pass Count first
         scannedMaterials = scannedMaterials.OrderByDescending(m => m.PassCount).ToList();
     }
 
@@ -81,22 +77,19 @@ public class ShaderComplexityTool : EditorWindow
         Shader shader = mat.shader;
 
         int activeTexCount = 0;
-        long totalTextureMemoryBytes = 0; // <-- NEW: Track memory in bytes
+        long totalTextureMemoryBytes = 0; 
         int propertyCount = ShaderUtil.GetPropertyCount(shader);
 
         for (int i = 0; i < propertyCount; i++)
         {
-            // Check if the property is a texture
             if (ShaderUtil.GetPropertyType(shader, i) == ShaderUtil.ShaderPropertyType.TexEnv)
             {
                 string propertyName = ShaderUtil.GetPropertyName(shader, i);
                 Texture tex = mat.GetTexture(propertyName);
                 
-                // Check if there is actually a texture assigned to this slot
                 if (tex != null)
                 {
                     activeTexCount++;
-                    // <-- NEW: Get the true runtime memory size of the texture (accounts for compression/mipmaps)
                     totalTextureMemoryBytes += Profiler.GetRuntimeMemorySizeLong(tex); 
                 }
             }
@@ -107,9 +100,8 @@ public class ShaderComplexityTool : EditorWindow
             Mat = mat,
             ShaderName = shader.name,
             PassCount = mat.passCount,
-            KeywordCount = mat.shaderKeywords.Length,
             TextureCount = activeTexCount,
-            TextureMemoryMB = totalTextureMemoryBytes / 1048576f, // <-- NEW: Convert Bytes to MB (1024 * 1024)
+            TextureMemoryMB = totalTextureMemoryBytes / 1048576f, 
             IsTransparent = mat.renderQueue >= 3000
         };
     }
@@ -119,9 +111,8 @@ public class ShaderComplexityTool : EditorWindow
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
         GUILayout.Label("Material Name", GUILayout.Width(200));
         GUILayout.Label("Passes", GUILayout.Width(50));
-        GUILayout.Label("Keywords", GUILayout.Width(65));
         GUILayout.Label("Textures", GUILayout.Width(60));
-        GUILayout.Label("Mem (MB)", GUILayout.Width(65)); // <-- NEW Column
+        GUILayout.Label("Mem (MB)", GUILayout.Width(65)); 
         GUILayout.Label("Transparent", GUILayout.Width(80));
         GUILayout.Label("Shader", GUILayout.Width(150));
         EditorGUILayout.EndHorizontal();
@@ -135,25 +126,17 @@ public class ShaderComplexityTool : EditorWindow
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
 
-            // Using simple bolding for the primary ranking factor (Passes)
             if (GUILayout.Button(data.Mat.name, EditorStyles.label, GUILayout.Width(200)))
             {
                 EditorGUIUtility.PingObject(data.Mat);
                 Selection.activeObject = data.Mat;
             }
 
-            // Highlight high pass counts in red/yellow for quick scanning
-            string passColor = "white";
-            if (data.PassCount > 9) passColor = "#FF4444"; // Red for 3+ passes
-            else if (data.PassCount > 8) passColor = "#FFFF44"; // Yellow for 2 passes
+            // Passes column: Now using standard label style with no color overrides
+            GUILayout.Label(data.PassCount.ToString(), GUILayout.Width(50));
 
-            GUILayout.Label($"<color={passColor}><b>{data.PassCount}</b></color>", richTextStyle, GUILayout.Width(50));
-            GUILayout.Label(data.KeywordCount.ToString(), GUILayout.Width(65));
             GUILayout.Label(data.TextureCount.ToString(), GUILayout.Width(60));
-            
-            // <-- NEW: Display the memory footprint to 2 decimal places
             GUILayout.Label(data.TextureMemoryMB.ToString("F2"), GUILayout.Width(65)); 
-            
             GUILayout.Label(data.IsTransparent ? "Yes" : "No", GUILayout.Width(80));
             GUILayout.Label(data.ShaderName, EditorStyles.miniLabel, GUILayout.Width(150));
 

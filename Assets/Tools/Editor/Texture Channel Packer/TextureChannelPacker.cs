@@ -176,6 +176,25 @@ public class TextureChannelPacker : EditorWindow
 
         if (targetW == 0) return;
 
+        // --- NEW: Determine the save directory based on the inputs ---
+        string saveDirectory = "Assets"; // Default fallback
+        Texture2D referenceTex = rTex != null ? rTex : (gTex != null ? gTex : (bTex != null ? bTex : aTex));
+
+        if (referenceTex != null)
+        {
+            string assetPath = AssetDatabase.GetAssetPath(referenceTex);
+            if (!string.IsNullOrEmpty(assetPath))
+            {
+                // Get the folder containing the texture
+                saveDirectory = Path.GetDirectoryName(assetPath);
+                // Windows uses backslashes for Path.GetDirectoryName, Unity requires forward slashes
+                saveDirectory = saveDirectory.Replace("\\", "/"); 
+            }
+        }
+
+        string fullSavePath = $"{saveDirectory}/{outputName}.png";
+        // -------------------------------------------------------------
+
         Texture2D packedTex = new Texture2D(targetW, targetH, TextureFormat.RGBA32, false);
         Color32[] packedPixels = new Color32[targetW * targetH];
 
@@ -208,11 +227,13 @@ public class TextureChannelPacker : EditorWindow
 
         packedTex.SetPixels32(packedPixels);
         packedTex.Apply();
-        File.WriteAllBytes("Assets/" + outputName + ".png", packedTex.EncodeToPNG());
-        AssetDatabase.Refresh();
 
+        // --- NEW: Use the dynamic path to save and import ---
+        File.WriteAllBytes(fullSavePath, packedTex.EncodeToPNG());
+        AssetDatabase.ImportAsset(fullSavePath, ImportAssetOptions.ForceUpdate);
+        
         DestroyImmediate(packedTex);
-        EditorUtility.DisplayDialog("Success", "Texture saved to Assets folder.", "OK");
+        EditorUtility.DisplayDialog("Success", $"Texture saved to: {fullSavePath}", "OK");
     }
 
     private Color32[] GetPixelsResized(Texture2D tex, int width, int height)
