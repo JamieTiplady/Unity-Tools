@@ -44,6 +44,9 @@ public class ProjectTextureQualityChecker : EditorWindow
 
     private void EnsureStyles()
     {
+        // Grab the current theme's default label color (White-ish in Dark mode, Black in Light mode)
+        Color themeTextColor = EditorStyles.label.normal.textColor;
+
         if (redLabelStyle == null)
         {
             redLabelStyle = new GUIStyle(EditorStyles.label);
@@ -55,6 +58,8 @@ public class ProjectTextureQualityChecker : EditorWindow
             centredLabelStyle = new GUIStyle(EditorStyles.label);
             centredLabelStyle.alignment = TextAnchor.MiddleCenter;
         }
+        // Update the color to match the current theme
+        centredLabelStyle.normal.textColor = themeTextColor;
 
         if (centredRedLabelStyle == null)
         {
@@ -63,8 +68,8 @@ public class ProjectTextureQualityChecker : EditorWindow
             centredRedLabelStyle.normal.textColor = Color.red;
         }
 
-        // Build cumulative X offsets from widths
-        if (colX == null)
+        // Keep the ColX fix from before to prevent the array errors
+        if (colX == null || colX.Length != ColHeaders.Length)
         {
             colX = new float[ColWidths.Length];
             float x = 0f;

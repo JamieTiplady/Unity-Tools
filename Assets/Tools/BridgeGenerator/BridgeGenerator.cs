@@ -15,11 +15,12 @@ public class BridgeGenerator : MonoBehaviour
     public List<GameObject> plankPrefabs;
     public GameObject railingPrefab;
     public GameObject lightPolePrefab;
-    public GameObject stringerPrefab; 
+    public GameObject stringerPrefab;
+    public GameObject pillarPrefab; 
 
     [Header("Plank Settings")]
     [Min(0.01f)] public float plankWidth = 0.2f;
-    public float plankSpacing = 0.05f; // Spacing can be 0, but width + spacing shouldn't be
+    public float plankSpacing = 0.05f;
     public float bridgeWidth = 2.0f;
     [Range(0, 5f)] public float randomRotation = 2.0f;
 
@@ -39,9 +40,11 @@ public class BridgeGenerator : MonoBehaviour
     public enum PivotLocation { Top, Center, Bottom }
 
     [Header("Support Pillar Settings")]
-    public GameObject pillarPrefab;
-    [Min(0.1f)] public float pillarSpacing = 5.0f; // <-- THE CULPRIT!
+    [Min(0.1f)] public float pillarSpacing = 5.0f;
     [Min(1.0f)] public float maxPillarHeight = 50.0f;
+    public float pillarInset = 0.3f; 
+    public float raycastOffset = 0.5f; 
+    public float meshNativeHeight = 1.0f; 
     public LayerMask groundMask = ~0; 
     public bool pillarsOnEdges = true;
     public PivotLocation pillarPivot = PivotLocation.Center;
@@ -51,9 +54,6 @@ public class BridgeGenerator : MonoBehaviour
     private void OnValidate() => RequestRebuild();
     private void OnEnable() => Spline.Changed += (s, k, m) => RequestRebuild();
     private void OnDisable() => Spline.Changed -= (s, k, m) => RequestRebuild();
-
-
-
 
     private void RequestRebuild()
     {
@@ -79,22 +79,30 @@ public class BridgeGenerator : MonoBehaviour
         var spline = splineContainer.Spline;
         float totalLength = spline.GetLength();
 
-        GenerateStringers(spline, totalLength);
-        GeneratePillars(spline, totalLength); // <-- NEW: Add this here
-        GeneratePlanks(spline, totalLength);
-        GenerateRailingsAndLights(spline, totalLength);
+        // FIX 1: Calculate the exact position of the final plank.
+        float plankStepSize = plankWidth + plankSpacing;
+        int plankCount = Mathf.FloorToInt(totalLength / plankStepSize);
+        float trueBridgeEnd = (plankCount > 0) ? (plankCount - 1) * plankStepSize : totalLength;
+
+        // FIX 2: Pass trueBridgeEnd to the supports so they never overhang the planks
+        GenerateStringers(spline, trueBridgeEnd);
+        GeneratePillars(spline, trueBridgeEnd);
+        GeneratePlanks(spline, totalLength); // Planks still use totalLength to calculate their own count
+        GenerateRailingsAndLights(spline, trueBridgeEnd);
     }
 
-    private void GenerateStringers(Spline spline, float totalLength)
+    private void GenerateStringers(Spline spline, float maxAllowedLength)
     {
         if (stringerPrefab == null) return;
 
         float currentDist = 0;
         bool useCenterBeam = bridgeWidth >= centerBeamThreshold;
+        float safeLength = Mathf.Max(0.1f, stringerLength);
 
-        while (currentDist < totalLength)
+        // FIX 3: Stop spawning if the next beam would stick out past the planks
+        while (currentDist <= maxAllowedLength - (safeLength * 0.2f))
         {
-            float t = currentDist / totalLength;
+            float t = currentDist / spline.GetLength();
             spline.Evaluate(t, out float3 localPos, out float3 localTan, out float3 localUp);
 
             Vector3 worldPos = splineContainer.transform.TransformPoint(localPos);
@@ -114,7 +122,6 @@ public class BridgeGenerator : MonoBehaviour
                 Instantiate(stringerPrefab, worldPos + verticalOffset, rot, transform);
             }
 
-            float safeLength = Mathf.Max(0.1f, stringerLength);
             currentDist += safeLength;
         }
     }
@@ -136,22 +143,21 @@ public class BridgeGenerator : MonoBehaviour
             Vector3 worldUp = splineContainer.transform.TransformDirection(localUp);
             Quaternion rot = Quaternion.LookRotation(worldTan, worldUp);
 
-            // FIXED: Explicitly use UnityEngine.Random
             GameObject prefab = plankPrefabs[UnityEngine.Random.Range(0, plankPrefabs.Count)];
             GameObject plank = Instantiate(prefab, worldPos, rot, transform);
-            
-            // FIXED: Explicitly use UnityEngine.Random
             plank.transform.Rotate(Vector3.up, UnityEngine.Random.Range(-randomRotation, randomRotation));
         }
     }
 
-    private void GenerateRailingsAndLights(Spline spline, float totalLength)
+    private void GenerateRailingsAndLights(Spline spline, float maxAllowedLength)
     {
         if (railingPrefab == null) return;
         float currentDist = 0;
         int railingCounter = 0;
+        float totalLength = spline.GetLength();
 
-        while (currentDist < totalLength - railingLength)
+        // FIX 4: Railings also respect the maxAllowedLength now
+        while (currentDist <= maxAllowedLength - railingLength)
         {
             float t = currentDist / totalLength;
             spline.Evaluate(t, out float3 localPos, out float3 localTan, out float3 localUp);
@@ -184,7 +190,6 @@ public class BridgeGenerator : MonoBehaviour
             }
             else
             {
-                // Failsafe applied to spacing
                 float safeSpacing = Mathf.Max(0.01f, railingSpacing);
                 currentDist += safeSpacing;
             }
@@ -201,73 +206,62 @@ public class BridgeGenerator : MonoBehaviour
         }
     }
 
-    private void GeneratePillars(Spline spline, float totalLength)
+    private void GeneratePillars(Spline spline, float maxAllowedLength)
     {
         if (pillarPrefab == null) return;
 
         float currentDist = 0;
+        float safeSpacing = Mathf.Max(0.1f, pillarSpacing); 
 
-        while (currentDist <= totalLength)
+        // FIX 5: Pillars stop exactly when the planks stop (with a tiny math buffer)
+        while (currentDist <= maxAllowedLength + 0.05f)
         {
-            float t = currentDist / totalLength;
+            float t = currentDist / spline.GetLength();
             spline.Evaluate(t, out float3 localPos, out float3 localTan, out float3 localUp);
 
             Vector3 worldPos = splineContainer.transform.TransformPoint(localPos);
             Vector3 worldTan = splineContainer.transform.TransformDirection(localTan);
-            
-            // FIX 1: Cross with Vector3.up to guarantee a perfectly horizontal left/right offset
             Vector3 trueRight = Vector3.Cross(Vector3.up, worldTan).normalized;
 
-            // FIX 2: Push the raycast start point down slightly so it doesn't hit the bridge's own colliders
-            Vector3 rayStartOffset = worldPos + (Vector3.down * 0.5f);
+            Vector3 rayStartOffset = worldPos + (Vector3.down * raycastOffset);
 
             if (pillarsOnEdges)
             {
-                float sideOffset = (bridgeWidth / 2f) - stringerInset;
-                SpawnPillar(rayStartOffset + (trueRight * sideOffset));
-                SpawnPillar(rayStartOffset - (trueRight * sideOffset));
+                float sideOffset = (bridgeWidth / 2f) - pillarInset;
+                SpawnPillar(worldPos + (trueRight * sideOffset), rayStartOffset + (trueRight * sideOffset));
+                SpawnPillar(worldPos - (trueRight * sideOffset), rayStartOffset - (trueRight * sideOffset));
             }
             else
             {
-                SpawnPillar(rayStartOffset);
+                SpawnPillar(worldPos, rayStartOffset);
             }
 
-            // Failsafe: Ensure spacing is NEVER 0 to prevent an infinite loop
-            float safeSpacing = Mathf.Max(0.1f, pillarSpacing); 
             currentDist += safeSpacing;
         }
     }
 
-    private void SpawnPillar(Vector3 rayOrigin)
+    private void SpawnPillar(Vector3 bridgePos, Vector3 rayOrigin)
     {
-        // Shoot ray straight down
         if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, maxPillarHeight, groundMask))
         {
-            float distanceToGround = hit.distance;
+            float totalDistance = Vector3.Distance(bridgePos, hit.point);
 
             GameObject pillar = Instantiate(pillarPrefab, transform);
-            
-            // FIX 3: Force rotation to identity so pillars are always perfectly vertical
             pillar.transform.rotation = Quaternion.identity;
 
             Vector3 originalScale = pillarPrefab.transform.localScale;
-            
-            // Note: This math assumes your mesh is exactly 1 unit tall. 
-            pillar.transform.localScale = new Vector3(originalScale.x, distanceToGround, originalScale.z);
+            float finalYScale = totalDistance / meshNativeHeight;
+            pillar.transform.localScale = new Vector3(originalScale.x, finalYScale, originalScale.z);
 
-            // FIX 4: Position the pillar based on where its pivot is located
             switch (pillarPivot)
             {
                 case PivotLocation.Top:
-                    // If pivot is at the top, just snap the top to the ray origin
-                    pillar.transform.position = rayOrigin;
+                    pillar.transform.position = bridgePos;
                     break;
                 case PivotLocation.Center:
-                    // If pivot is centered, move it exactly halfway down the raycast
-                    pillar.transform.position = rayOrigin + (Vector3.down * (distanceToGround / 2f));
+                    pillar.transform.position = bridgePos + (Vector3.down * (totalDistance / 2f));
                     break;
                 case PivotLocation.Bottom:
-                    // If pivot is at the bottom, snap it to the ground hit point
                     pillar.transform.position = hit.point;
                     break;
             }
