@@ -9,6 +9,15 @@ public class ShaderComplexityTool : EditorWindow
     private Vector2 scrollPosition;
     private List<MaterialComplexityData> scannedMaterials = new List<MaterialComplexityData>();
     private GUIStyle richTextStyle;
+    
+    //track which tab is open
+    private int selectedTab = 0; 
+    private readonly string[] tabLabels = { "Scan Active Scene", "Scan All Project Assets" };
+
+    //sorting State
+    private enum SortType { Name, Passes, Textures, Memory, Transparent, Shader }
+    private SortType currentSort = SortType.Passes;
+    private bool sortDescending = true;
 
     private class MaterialComplexityData
     {
@@ -30,14 +39,28 @@ public class ShaderComplexityTool : EditorWindow
             richTextStyle = new GUIStyle(EditorStyles.label) { richText = true };
         }
 
-        GUILayout.Label("Scene Shader Pass Scanner", EditorStyles.boldLabel);
+        GUILayout.Label("Shader Pass Scanner", EditorStyles.boldLabel);
         EditorGUILayout.HelpBox("Ranking materials by Render Pass count. More passes generally mean more draw-call overhead per object.", MessageType.Info);
 
         EditorGUILayout.Space();
 
-        if (GUILayout.Button("Scan Active Scene", GUILayout.Height(40)))
+        //Toggle between modes - scene/project
+        selectedTab = GUILayout.Toolbar(selectedTab, tabLabels);
+        EditorGUILayout.Space();
+
+        //change button text based on the selected tab
+        string buttonText = selectedTab == 0 ? "Scan Active Scene" : "Scan Project Assets";
+
+        if (GUILayout.Button(buttonText, GUILayout.Height(40)))
         {
-            ScanScene();
+            if (selectedTab == 0)
+            {
+                ScanScene();
+            }
+            else
+            {
+                ScanProjectAssets();
+            }
         }
 
         EditorGUILayout.Space();
@@ -69,12 +92,36 @@ public class ShaderComplexityTool : EditorWindow
             scannedMaterials.Add(AnalyzeMaterial(mat));
         }
 
-        scannedMaterials = scannedMaterials.OrderByDescending(m => m.PassCount).ToList();
+        //dynamic sorting instead of hardcoded sorting
+        SortData();
+    }
+
+    private void ScanProjectAssets()
+    {
+        scannedMaterials.Clear();
+
+        string[] searchFolders = new string[] { "Assets" };
+        string[] guids = AssetDatabase.FindAssets("t:Material", searchFolders);
+        
+        foreach (string guid in guids)
+        {
+            string assetPath = AssetDatabase.GUIDToAssetPath(guid);
+            Material mat = AssetDatabase.LoadAssetAtPath<Material>(assetPath);
+            
+            if (mat != null)
+            {
+                scannedMaterials.Add(AnalyzeMaterial(mat));
+            }
+        }
+
+        //dynamic sorting instead of hardcoded sorting
+        SortData();
     }
 
     private MaterialComplexityData AnalyzeMaterial(Material mat)
     {
         Shader shader = mat.shader;
+        if (shader == null) return new MaterialComplexityData { Mat = mat, ShaderName = "Hidden/Error" };
 
         int activeTexCount = 0;
         long totalTextureMemoryBytes = 0; 
@@ -106,15 +153,73 @@ public class ShaderComplexityTool : EditorWindow
         };
     }
 
+    //handle sorting logic for ordering the materials found
+    private void SortData()
+    {
+        if (scannedMaterials == null || scannedMaterials.Count == 0) return;
+
+        switch (currentSort)
+        {
+            case SortType.Name:
+                scannedMaterials = sortDescending ? scannedMaterials.OrderByDescending(m => m.Mat.name).ToList() : scannedMaterials.OrderBy(m => m.Mat.name).ToList();
+                break;
+            case SortType.Passes:
+                scannedMaterials = sortDescending ? scannedMaterials.OrderByDescending(m => m.PassCount).ToList() : scannedMaterials.OrderBy(m => m.PassCount).ToList();
+                break;
+            case SortType.Textures:
+                scannedMaterials = sortDescending ? scannedMaterials.OrderByDescending(m => m.TextureCount).ToList() : scannedMaterials.OrderBy(m => m.TextureCount).ToList();
+                break;
+            case SortType.Memory:
+                scannedMaterials = sortDescending ? scannedMaterials.OrderByDescending(m => m.TextureMemoryMB).ToList() : scannedMaterials.OrderBy(m => m.TextureMemoryMB).ToList();
+                break;
+            case SortType.Transparent:
+                scannedMaterials = sortDescending ? scannedMaterials.OrderByDescending(m => m.IsTransparent).ToList() : scannedMaterials.OrderBy(m => m.IsTransparent).ToList();
+                break;
+            case SortType.Shader:
+                scannedMaterials = sortDescending ? scannedMaterials.OrderByDescending(m => m.ShaderName).ToList() : scannedMaterials.OrderBy(m => m.ShaderName).ToList();
+                break;
+        }
+    }
+
+    //function to create clickable header buttons
+    private void DrawSortableHeader(string label, float width, SortType sortType)
+    {
+        string displayLabel = label;
+        
+        //arrow to show which column is currently sorting the data
+        if (currentSort == sortType)
+        {
+            displayLabel += sortDescending ? " ▼" : " ▲";
+        }
+
+        //EditorStyles.toolbarButton makes it look like a header but act like a button
+        if (GUILayout.Button(displayLabel, EditorStyles.toolbarButton, GUILayout.Width(width)))
+        {
+            if (currentSort == sortType)
+            {
+                sortDescending = !sortDescending; //toggle direction if clicking the same column
+            }
+            else
+            {
+                currentSort = sortType;
+                sortDescending = true; //default to descending when clicking a new column
+            }
+            SortData();
+        }
+    }
+
     private void DrawHeader()
     {
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-        GUILayout.Label("Material Name", GUILayout.Width(200));
-        GUILayout.Label("Passes", GUILayout.Width(50));
-        GUILayout.Label("Textures", GUILayout.Width(60));
-        GUILayout.Label("Mem (MB)", GUILayout.Width(65)); 
-        GUILayout.Label("Transparent", GUILayout.Width(80));
-        GUILayout.Label("Shader", GUILayout.Width(150));
+        
+        //sortable clickable headers
+        DrawSortableHeader("Material Name", 200, SortType.Name);
+        DrawSortableHeader("Passes", 50, SortType.Passes);
+        DrawSortableHeader("Textures", 60, SortType.Textures);
+        DrawSortableHeader("Mem (MB)", 65, SortType.Memory);
+        DrawSortableHeader("Transparent", 80, SortType.Transparent);
+        DrawSortableHeader("Shader", 150, SortType.Shader);
+        
         EditorGUILayout.EndHorizontal();
     }
 
@@ -132,9 +237,7 @@ public class ShaderComplexityTool : EditorWindow
                 Selection.activeObject = data.Mat;
             }
 
-            // Passes column: Now using standard label style with no color overrides
             GUILayout.Label(data.PassCount.ToString(), GUILayout.Width(50));
-
             GUILayout.Label(data.TextureCount.ToString(), GUILayout.Width(60));
             GUILayout.Label(data.TextureMemoryMB.ToString("F2"), GUILayout.Width(65)); 
             GUILayout.Label(data.IsTransparent ? "Yes" : "No", GUILayout.Width(80));

@@ -50,6 +50,8 @@ public class BridgeGenerator : MonoBehaviour
         public float edgeOffset = 0.1f;
     }
 
+    
+
     public enum PivotLocation { Top, Center, Bottom }
 
     [System.Serializable]
@@ -64,6 +66,9 @@ public class BridgeGenerator : MonoBehaviour
         public bool onEdges = true;
         public PivotLocation pivot = PivotLocation.Center;
     }
+
+    [Header("Orientation Settings")]
+    public bool lockWorldUp = true;
 
     public ReferenceSettings refs;
     public PlankSettings planks;
@@ -131,12 +136,14 @@ public class BridgeGenerator : MonoBehaviour
 
             Vector3 worldPos = refs.splineContainer.transform.TransformPoint(localPos);
             Vector3 worldTan = refs.splineContainer.transform.TransformDirection(localTan);
-            Vector3 worldUp = refs.splineContainer.transform.TransformDirection(localUp);
-            Quaternion rot = Quaternion.LookRotation(worldTan, worldUp);
-            Vector3 right = Vector3.Cross(worldUp, worldTan).normalized;
-
+            
+            //uses a stable up, world up rather than local spline up
+            Vector3 upDir = lockWorldUp ? Vector3.up : (Vector3)refs.splineContainer.transform.TransformDirection(localUp);
+            Quaternion rot = Quaternion.LookRotation(worldTan, upDir);
+            
+            Vector3 right = Vector3.Cross(upDir, worldTan).normalized;
             float sideOffset = (planks.bridgeWidth / 2f) - stringers.inset;
-            Vector3 verticalOffset = -worldUp * stringers.yOffset;
+            Vector3 verticalOffset = -upDir * stringers.yOffset;
 
             Instantiate(refs.stringerPrefab, worldPos - (right * sideOffset) + verticalOffset, rot, transform);
             Instantiate(refs.stringerPrefab, worldPos + (right * sideOffset) + verticalOffset, rot, transform);
@@ -165,8 +172,10 @@ public class BridgeGenerator : MonoBehaviour
 
             Vector3 worldPos = refs.splineContainer.transform.TransformPoint(localPos);
             Vector3 worldTan = refs.splineContainer.transform.TransformDirection(localTan);
-            Vector3 worldUp = refs.splineContainer.transform.TransformDirection(localUp);
-            Quaternion rot = Quaternion.LookRotation(worldTan, worldUp);
+            
+            //uses a stable up, world up rather than local spline up
+            Vector3 upDir = lockWorldUp ? Vector3.up : (Vector3)refs.splineContainer.transform.TransformDirection(localUp);
+            Quaternion rot = Quaternion.LookRotation(worldTan, upDir);
 
             GameObject prefab = refs.plankPrefabs[rnd.NextInt(0, refs.plankPrefabs.Count)];
             GameObject plank = Instantiate(prefab, worldPos, rot, transform);
@@ -189,9 +198,11 @@ public class BridgeGenerator : MonoBehaviour
             spline.Evaluate(t, out float3 localPos, out float3 localTan, out float3 localUp);
             Vector3 worldPos = refs.splineContainer.transform.TransformPoint(localPos);
             Vector3 worldTan = refs.splineContainer.transform.TransformDirection(localTan);
-            Vector3 worldUp = refs.splineContainer.transform.TransformDirection(localUp);
-            Quaternion rot = Quaternion.LookRotation(worldTan, worldUp);
-            Vector3 right = Vector3.Cross(worldUp, worldTan).normalized;
+            
+            //uses a stable up, world up rather than local spline up
+            Vector3 upDir = lockWorldUp ? Vector3.up : (Vector3)refs.splineContainer.transform.TransformDirection(localUp);
+            Quaternion rot = Quaternion.LookRotation(worldTan, upDir);
+            Vector3 right = Vector3.Cross(upDir, worldTan).normalized;
 
             float sideOffset = (planks.bridgeWidth / 2f) - railings.edgeOffset;
             Instantiate(refs.railingPrefab, worldPos + (right * sideOffset), rot, transform);
@@ -207,8 +218,9 @@ public class BridgeGenerator : MonoBehaviour
                 spline.Evaluate(pt, out float3 pLocalPos, out float3 pLocalTan, out float3 pLocalUp);
                 Vector3 pWorldPos = refs.splineContainer.transform.TransformPoint(pLocalPos);
                 Vector3 pWorldTan = refs.splineContainer.transform.TransformDirection(pLocalTan);
-                Vector3 pWorldUp = refs.splineContainer.transform.TransformDirection(pLocalUp);
-                Quaternion pRot = Quaternion.LookRotation(pWorldTan, pWorldUp);
+                
+                Vector3 pUpDir = lockWorldUp ? Vector3.up : (Vector3)refs.splineContainer.transform.TransformDirection(pLocalUp);
+                Quaternion pRot = Quaternion.LookRotation(pWorldTan, pUpDir);
                 
                 Instantiate(refs.lightPolePrefab, pWorldPos + (right * sideOffset), pRot, transform);
                 Instantiate(refs.lightPolePrefab, pWorldPos - (right * sideOffset), pRot, transform);
@@ -259,11 +271,18 @@ public class BridgeGenerator : MonoBehaviour
         if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, pillars.maxHeight, pillars.groundMask))
         {
             float totalDistance = Vector3.Distance(bridgePos, hit.point);
+            
+            //Ensure can't divide by zero
+            float nativeHeight = Mathf.Max(0.01f, pillars.meshNativeHeight);
+            
             GameObject pillar = Instantiate(refs.pillarPrefab, transform);
             pillar.transform.rotation = Quaternion.identity;
 
             Vector3 originalScale = refs.pillarPrefab.transform.localScale;
-            float finalYScale = totalDistance / pillars.meshNativeHeight;
+            
+            //Calculate using the safe height
+            float finalYScale = totalDistance / nativeHeight;
+            
             pillar.transform.localScale = new Vector3(originalScale.x, finalYScale, originalScale.z);
 
             switch (pillars.pivot)
