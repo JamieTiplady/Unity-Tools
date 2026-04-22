@@ -69,7 +69,6 @@ public class ProceduralScatterOnSpline : MonoBehaviour
         var spline = splineContainer.Spline;
         List<(GameObject instance, ScatterSettings settings)> spawnedItems = new List<(GameObject, ScatterSettings)>();
 
-        // --- PASS 1: SPAWN EVERYTHING ---
         foreach (var group in scatterGroups)
         {
             if (group.prefab == null) continue;
