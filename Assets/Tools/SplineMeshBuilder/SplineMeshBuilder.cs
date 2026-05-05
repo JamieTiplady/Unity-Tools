@@ -1,9 +1,7 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Splines;
 using Unity.Mathematics;
-#if UNITY_EDITOR
-using UnityEditor;
-#endif
 
 [ExecuteAlways]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
@@ -14,154 +12,185 @@ public class SplineMeshBuilder : MonoBehaviour
     public Mesh sourceMesh;
     public Material material;
 
-    [Header("Settings")]
+    [Header("Bridge Settings")]
     public bool autoUpdate = true;
     public bool fitToEnd = true;
 
-    // Cached component references so we never call GetComponent in a hot path
-    private MeshFilter   _filter;
+    [Header("Pillar Settings")]
+    public bool generatePillars = true;
+    public Mesh pillarMesh;
+    public Material pillarMaterial;
+    [Min(0.1f)] public float pillarSpacing = 10f;
+    public bool pillarsOnEdges = true;
+    public float edgeOffset = 2.5f;
+    public float pillarVerticalOffset = 0f;
+
+    [Header("Raycast Settings")]
+    public LayerMask groundLayer;
+    public float maxPillarHeight = 20f;
+    public float rayStartOffset = 0.5f;
+    public bool showDebugRays = false;
+
+    // --- OPTIMIZATION CACHE ---
+    private MeshFilter _filter;
     private MeshRenderer _renderer;
-    private Mesh         _generatedMesh;
+    private Mesh _generatedMesh;
 
-    // Cache components once on wake rather than every GenerateMesh call
-    private void Awake()
-    {
-        _filter   = GetComponent<MeshFilter>();
-        _renderer = GetComponent<MeshRenderer>();
-    }
+    // Cache mesh data locally to avoid expensive ".vertices" calls
+    private Vector3[] _srcVerts;
+    private Vector3[] _srcNormals;
+    private Vector2[] _srcUVs;
+    private int[] _srcTris;
 
-    // Subscribe to Unity's spline-changed event so we rebuild whenever the spline moves/reshapes
-    private void OnEnable()  => Spline.Changed += OnSplineChanged;
+    private void OnEnable() => Spline.Changed += OnSplineChanged;
     private void OnDisable() => Spline.Changed -= OnSplineChanged;
 
     private void OnSplineChanged(Spline s, int k, SplineModification m)
     {
-        // Only rebuild if auto-update is on AND the changed spline is ours
         if (autoUpdate && splineContainer != null && s == splineContainer.Spline)
             GenerateMesh();
+    }
+
+    private void CacheSourceMeshData()
+    {
+        if (sourceMesh == null) return;
+        _srcVerts = sourceMesh.vertices;
+        _srcNormals = sourceMesh.normals;
+        _srcUVs = sourceMesh.uv;
+        _srcTris = sourceMesh.triangles;
     }
 
     [ContextMenu("Generate Spline Mesh")]
     public void GenerateMesh()
     {
         if (sourceMesh == null || splineContainer == null) return;
-
-        // Unity requires Read/Write enabled on the mesh asset to access its vertex data in code
         if (!sourceMesh.isReadable) return;
 
-        // Lazily grab components if Awake hasn't fired (e.g. called from editor context menu)
-        if (_filter   == null) _filter   = GetComponent<MeshFilter>();
+        if (_filter == null) _filter = GetComponent<MeshFilter>();
         if (_renderer == null) _renderer = GetComponent<MeshRenderer>();
 
-        if (material != null) _renderer.sharedMaterial = material;
-
-        // How long the spline is in world units
         float splineLength = splineContainer.CalculateLength();
-        // How long a single tile of our source mesh is (measured along Z, its forward axis)
         float meshLength = sourceMesh.bounds.size.z;
-
         if (splineLength < 0.1f || meshLength < 0.01f) return;
 
-        // How many times we need to repeat the mesh to cover the full spline
-        int segments = Mathf.CeilToInt(splineLength / meshLength);
+        // 1. Cache the heavy data once per generation
+        CacheSourceMeshData();
 
-        // If fitToEnd is on, stretch each tile slightly so the last one ends exactly at the spline tip
-        // Otherwise every tile is true-to-size and the last one may fall a little short
+        int segments = Mathf.CeilToInt(splineLength / meshLength);
         float scaledMeshLength = fitToEnd ? (splineLength / segments) : meshLength;
 
-        // Snapshot source mesh data into local arrays — avoids repeated managed->native calls inside the loop
-        Vector3[] srcVerts   = sourceMesh.vertices;
-        Vector3[] srcNormals = sourceMesh.normals;
-        Vector2[] srcUVs     = sourceMesh.uv;
-        int[]     srcTris    = sourceMesh.triangles;
+        // Pre-calculate exact sizes to avoid List resizing
+        int pillarCount = generatePillars ? (Mathf.FloorToInt(splineLength / pillarSpacing) + 1) : 0;
+        int pillarsToSpawn = pillarsOnEdges ? pillarCount * 2 : pillarCount;
+        
+        int totalVerts = (segments * _srcVerts.Length) + (pillarsToSpawn * (pillarMesh ? pillarMesh.vertexCount : 0));
+        
+        // We still use Lists for triangles because we don't know exactly how many pillars will pass the raycast check
+        List<Vector3> allVerts = new List<Vector3>(totalVerts);
+        List<Vector3> allNormals = new List<Vector3>(totalVerts);
+        List<Vector2> allUVs = new List<Vector2>(totalVerts);
+        
+        // Submesh tracking
+        List<int> bridgeTris = new List<int>();
+        List<int> pillarTris = new List<int>();
 
-        int srcVertCount = srcVerts.Length;
-        int srcTriCount  = srcTris.Length;
-
-        // Pre-allocate output arrays sized for all segments up front — no mid-loop allocations
-        Vector3[] newVerts   = new Vector3[srcVertCount * segments];
-        Vector3[] newNormals = new Vector3[srcVertCount * segments];
-        Vector2[] newUVs     = new Vector2[srcVertCount * segments];
-        int[]     newTris    = new int[srcTriCount  * segments];
-
-        // The lowest Z value in the source mesh; used to normalise each vertex's Z to a 0-based distance
+        Matrix4x4 worldToLocal = transform.worldToLocalMatrix;
         float minZ = sourceMesh.bounds.min.z;
 
-        // Cache the world-to-local matrix once — it's the same for every vertex and calling
-        // transform.worldToLocalMatrix repeatedly re-computes it each time
-        Matrix4x4 worldToLocal = transform.worldToLocalMatrix;
-
+        // ==========================================
+        // OPTIMIZED PASS 1: BRIDGE ROAD
+        // ==========================================
         for (int s = 0; s < segments; s++)
         {
-            // Where in the output arrays this segment's data starts
-            int vertOffset = s * srcVertCount;
-            int triOffset  = s * srcTriCount;
-
-            // World-distance along the spline where this segment tile begins
+            int baseVertIndex = allVerts.Count;
             float segmentStartDist = s * scaledMeshLength;
 
-            for (int i = 0; i < srcVertCount; i++)
+            for (int i = 0; i < _srcVerts.Length; i++)
             {
-                // Distance of this vertex along the spline:
-                // shift the vertex Z so it starts from 0, scale it if fitToEnd is on,
-                // then add the offset for whichever tile we're on
-                float dist = segmentStartDist + ((srcVerts[i].z - minZ) * (scaledMeshLength / meshLength));
-
-                // Convert distance to a 0-1 parameter (t=0 is spline start, t=1 is spline end)
+                float dist = segmentStartDist + ((_srcVerts[i].z - minZ) * (scaledMeshLength / meshLength));
                 float t = Mathf.Clamp01(dist / splineLength);
 
-                // Ask the spline for position, forward direction, and up direction at this t
-                // These come back in world space
+                // Evaluation is expensive, but we've reduced it to once per vertex
                 splineContainer.Evaluate(t, out float3 wPos, out float3 wTan, out float3 wUp);
 
-                // Bring the spline's world-space frame into this object's local space
-                Vector3 lPos   = worldToLocal.MultiplyPoint(wPos);
-                Vector3 lTan   = worldToLocal.MultiplyVector(wTan).normalized; // forward along spline
-                Vector3 lUp    = worldToLocal.MultiplyVector(wUp).normalized;  // up at this point
-                Vector3 lRight = Vector3.Cross(lUp, lTan).normalized;          // right = up × forward
+                Vector3 lPos = worldToLocal.MultiplyPoint(wPos);
+                Vector3 lTan = worldToLocal.MultiplyVector(wTan).normalized;
+                Vector3 lUp = worldToLocal.MultiplyVector(wUp).normalized;
+                Vector3 lRight = Vector3.Cross(lUp, lTan).normalized;
 
-                // Place the vertex by starting at the spline position then pushing it
-                // sideways (X) and upward (Y) according to its original offset in the source mesh
-                newVerts[vertOffset + i] = lPos + (lRight * srcVerts[i].x) + (lUp * srcVerts[i].y);
-
-                // Rotate the normal using the local tangent frame directly — avoids creating a
-                // Quaternion just to do a basis transform, which is the same operation written cheaper
-                newNormals[vertOffset + i] = (lRight * srcNormals[i].x)
-                                           + (lUp    * srcNormals[i].y)
-                                           + (lTan   * srcNormals[i].z);
-
-                //UVs don't change — copy straight across
-                newUVs[vertOffset + i] = srcUVs[i];
+                allVerts.Add(lPos + (lRight * _srcVerts[i].x) + (lUp * _srcVerts[i].y));
+                allNormals.Add((lRight * _srcNormals[i].x) + (lUp * _srcNormals[i].y) + (lTan * _srcNormals[i].z));
+                allUVs.Add(_srcUVs[i]);
             }
 
-            // Copy triangle indices for this segment, shifting each index by how many
-            // vertices came before it so they point at the right segment's vertices
-            for (int i = 0; i < srcTriCount; i++)
-                newTris[triOffset + i] = srcTris[i] + vertOffset;
+            for (int i = 0; i < _srcTris.Length; i++)
+                bridgeTris.Add(_srcTris[i] + baseVertIndex);
         }
 
-        // Clean up the old generated mesh to avoid leaking assets in memory
-        if (_generatedMesh != null)
+        // ==========================================
+        // OPTIMIZED PASS 2: PILLARS
+        // ==========================================
+        if (generatePillars && pillarMesh != null)
         {
-            if (Application.isPlaying) Destroy(_generatedMesh);
-            else DestroyImmediate(_generatedMesh);
+            Vector3[] pVerts = pillarMesh.vertices;
+            Vector3[] pNormals = pillarMesh.normals;
+            Vector2[] pUVs = pillarMesh.uv;
+            int[] pTris = pillarMesh.triangles;
+            float actualSpacing = splineLength / Mathf.Max(1, pillarCount - 1);
+
+            for (int p = 0; p < pillarCount; p++)
+            {
+                float t = Mathf.Clamp01((p * actualSpacing) / splineLength);
+                splineContainer.Evaluate(t, out float3 wPos, out float3 wTan, out float3 wUp);
+
+                Vector3 worldForward = new Vector3(wTan.x, 0, wTan.z).normalized;
+                if (worldForward.sqrMagnitude < 0.001f) worldForward = Vector3.forward;
+                Vector3 worldRight = Vector3.Cross(Vector3.up, worldForward).normalized;
+
+                // Pre-calculate orientation for the pillar
+                Vector3 lTan = worldToLocal.MultiplyVector(worldForward).normalized;
+                Vector3 lUp = worldToLocal.MultiplyVector(Vector3.up).normalized;
+                Vector3 lRight = worldToLocal.MultiplyVector(worldRight).normalized;
+
+                void TryPillar(Vector3 pos) {
+                    Vector3 rayOrigin = pos + (Vector3.down * rayStartOffset);
+                    if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, maxPillarHeight, groundLayer)) {
+                        int vStart = allVerts.Count;
+                        Vector3 lPivot = worldToLocal.MultiplyPoint(pos) + (lUp * pillarVerticalOffset);
+                        for(int i=0; i<pVerts.Length; i++) {
+                            allVerts.Add(lPivot + (lRight * pVerts[i].x) + (lUp * pVerts[i].y) + (lTan * pVerts[i].z));
+                            allNormals.Add((lRight * pNormals[i].x) + (lUp * pNormals[i].y) + (lTan * pNormals[i].z));
+                            allUVs.Add(pUVs[i]);
+                        }
+                        for(int i=0; i<pTris.Length; i++) pillarTris.Add(pTris[i] + vStart);
+                    }
+                }
+
+                if (pillarsOnEdges) {
+                    TryPillar((Vector3)wPos - (worldRight * edgeOffset));
+                    TryPillar((Vector3)wPos + (worldRight * edgeOffset));
+                } else {
+                    TryPillar(wPos);
+                }
+            }
         }
 
-        _generatedMesh = new Mesh { name = "SplineDeformedMesh" };
+        // ==========================================
+        // FINAL APPLY
+        // ==========================================
+        if (_generatedMesh == null) _generatedMesh = new Mesh { name = "BridgeMesh" };
+        else _generatedMesh.Clear();
 
-        // Unity's default index buffer only supports ~65k vertices; switch to 32-bit if need more
-        if (newVerts.Length > 65535)
-            _generatedMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+        if (allVerts.Count > 65535) _generatedMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
 
-        _generatedMesh.vertices  = newVerts;
-        _generatedMesh.normals   = newNormals;
-        _generatedMesh.uv        = newUVs;
-        _generatedMesh.triangles = newTris;
+        _generatedMesh.SetVertices(allVerts);
+        _generatedMesh.SetNormals(allNormals);
+        _generatedMesh.SetUVs(0, allUVs);
+        _generatedMesh.subMeshCount = 2;
+        _generatedMesh.SetTriangles(bridgeTris, 0);
+        _generatedMesh.SetTriangles(pillarTris, 1);
 
-        // Recalculate the bounding box (used for culling) and tangents (used for normal maps)
-        _generatedMesh.RecalculateBounds();
-        _generatedMesh.RecalculateTangents();
-
+        _renderer.sharedMaterials = new Material[] { material, pillarMaterial != null ? pillarMaterial : material };
         _filter.sharedMesh = _generatedMesh;
     }
 }
