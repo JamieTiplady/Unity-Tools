@@ -11,7 +11,7 @@ public class TextureChannelPacker : EditorWindow
     // Manual Mode Variables
     private Texture2D texR, texG, texB, texA;
     private bool invR, invG, invB, invA;
-    private bool useMetallicAlpha = false; // <--- NEW TOGGLE
+    private bool useMetallicAlpha = false; 
     private string fileName = "T_PackedTexture_Mask";
 
     // Batch Mode Variables
@@ -27,7 +27,7 @@ public class TextureChannelPacker : EditorWindow
 
     private void OnGUI()
     {
-        GUILayout.Label("Texture Channel Packer (Color32)", EditorStyles.boldLabel);
+        GUILayout.Label("Texture Channel Packer (Linear Data)", EditorStyles.boldLabel);
         
         tab = GUILayout.Toolbar(tab, new string[] { "Manual Mode", "Batch Folder Mode" });
         EditorGUILayout.Space();
@@ -43,30 +43,24 @@ public class TextureChannelPacker : EditorWindow
 
         DrawChannelSlot("Red Channel - Metallic", ref texR, ref invR);
 
-        // --- CUSTOM GREEN CHANNEL UI ---
         EditorGUILayout.BeginVertical(EditorStyles.helpBox);
         EditorGUILayout.BeginHorizontal();
         
-        // Disable the input field if the toggle is true
         EditorGUI.BeginDisabledGroup(useMetallicAlpha);
         texG = (Texture2D)EditorGUILayout.ObjectField("Green Channel - Smoothness", texG, typeof(Texture2D), false);
         EditorGUI.EndDisabledGroup();
 
-        invertGLogic: 
         invG = EditorGUILayout.ToggleLeft("Invert", invG, GUILayout.Width(60));
         EditorGUILayout.EndHorizontal();
 
-        // The Toggle for Metallic Alpha
         bool lastToggle = useMetallicAlpha;
         useMetallicAlpha = EditorGUILayout.ToggleLeft("Use Metallic Alpha as Smoothness", useMetallicAlpha);
         
-        // If they just turned it on, clear the green texture slot so it's not confusing
         if (useMetallicAlpha && !lastToggle) texG = null;
 
         if (texG != null) DrawSRGBWarning(texG);
         EditorGUILayout.EndVertical();
         EditorGUILayout.Space(2);
-        // ---------------------------------
 
         DrawChannelSlot("Blue Channel - AO", ref texB, ref invB);
         DrawChannelSlot("Alpha Channel - Emission Mask", ref texA, ref invA);
@@ -119,7 +113,6 @@ public class TextureChannelPacker : EditorWindow
         }
 
         Texture2D bR = folderTextures.FirstOrDefault(t => suffixR.Any(s => t.name.EndsWith(s, System.StringComparison.OrdinalIgnoreCase)));
-        // Only look for a green texture if we aren't using the Red Alpha
         Texture2D bG = useMetallicAlpha ? null : folderTextures.FirstOrDefault(t => suffixG.Any(s => t.name.EndsWith(s, System.StringComparison.OrdinalIgnoreCase)));
         Texture2D bB = folderTextures.FirstOrDefault(t => suffixB.Any(s => t.name.EndsWith(s, System.StringComparison.OrdinalIgnoreCase)));
         Texture2D bA = folderTextures.FirstOrDefault(t => suffixA.Any(s => t.name.EndsWith(s, System.StringComparison.OrdinalIgnoreCase)));
@@ -176,8 +169,7 @@ public class TextureChannelPacker : EditorWindow
 
         if (targetW == 0) return;
 
-        // --- NEW: Determine the save directory based on the inputs ---
-        string saveDirectory = "Assets"; // Default fallback
+        string saveDirectory = "Assets"; 
         Texture2D referenceTex = rTex != null ? rTex : (gTex != null ? gTex : (bTex != null ? bTex : aTex));
 
         if (referenceTex != null)
@@ -185,17 +177,13 @@ public class TextureChannelPacker : EditorWindow
             string assetPath = AssetDatabase.GetAssetPath(referenceTex);
             if (!string.IsNullOrEmpty(assetPath))
             {
-                // Get the folder containing the texture
-                saveDirectory = Path.GetDirectoryName(assetPath);
-                // Windows uses backslashes for Path.GetDirectoryName, Unity requires forward slashes
-                saveDirectory = saveDirectory.Replace("\\", "/"); 
+                saveDirectory = Path.GetDirectoryName(assetPath).Replace("\\", "/"); 
             }
         }
 
         string fullSavePath = $"{saveDirectory}/{outputName}.png";
-        // -------------------------------------------------------------
 
-        Texture2D packedTex = new Texture2D(targetW, targetH, TextureFormat.RGBA32, false);
+        Texture2D packedTex = new Texture2D(targetW, targetH, TextureFormat.RGBA32, false, true); // FIXED: Added 'true' to ensure Linear creation in memory
         Color32[] packedPixels = new Color32[targetW * targetH];
 
         Color32[] rPixels = GetPixelsResized(rTex, targetW, targetH);
@@ -203,23 +191,51 @@ public class TextureChannelPacker : EditorWindow
         Color32[] bPixels = GetPixelsResized(bTex, targetW, targetH);
         Color32[] aPixels = GetPixelsResized(aTex, targetW, targetH);
 
+        /*
         for (int i = 0; i < packedPixels.Length; i++)
         {
-            byte r = GetByte(rPixels, i, 0, invR);
-            byte b = GetByte(bPixels, i, 0, invB);
-            byte a = GetByte(aPixels, i, 255, invA);
+            // FIXED: Proper Default Values 
+            byte r = GetByte(rPixels, i, 0, invR);       // Default Metallic: 0 (Non-metal)
+            byte b = GetByte(bPixels, i, 255, invB);     // Default AO: 255 (Fully Lit/No shadow)
+            byte a = GetByte(aPixels, i, 0, invA);       // Default Emission: 0 (No glow!)
 
-            // --- SMOOTHNESS LOGIC ---
             byte g;
             if (useMetallicAlpha && rPixels != null)
             {
-                // Grab the ALPHA from the Red (Metallic) pixels
                 g = rPixels[i].a;
                 if (invG) g = (byte)(255 - g);
             }
             else
             {
-                g = GetByte(gPixels, i, 0, invG);
+                g = GetByte(gPixels, i, 0, invG);        // Default Smoothness: 0 (Matte)
+            }
+
+            packedPixels[i] = new Color32(r, g, b, a);
+        }
+        */
+
+        for (int i = 0; i < packedPixels.Length; i++)
+        {
+            byte r = GetByte(rPixels, i, 0, invR);       
+            byte b = GetByte(bPixels, i, 255, invB);     
+            byte a = GetByte(aPixels, i, 0, invA);       
+
+            byte g;
+            if (useMetallicAlpha && rPixels != null)
+            {
+                // SAFETY CHECK: If Alpha is 255 everywhere, the texture probably doesn't HAVE alpha
+                // and we shouldn't be using it as Smoothness.
+                g = rPixels[i].a;
+                
+                // If you suspect the 'bright' look is here, try disabling 'useMetallicAlpha' 
+                // and using a dedicated Green channel texture instead.
+                if (invG) g = (byte)(255 - g);
+            }
+            else
+            {
+                // If your model is too bright/shiny, TRY CHECKING THE 'INVERT' TOGGLE 
+                // on the Green channel. Your source might be 'Roughness' instead of 'Smoothness'.
+                g = GetByte(gPixels, i, 0, invG); 
             }
 
             packedPixels[i] = new Color32(r, g, b, a);
@@ -228,9 +244,17 @@ public class TextureChannelPacker : EditorWindow
         packedTex.SetPixels32(packedPixels);
         packedTex.Apply();
 
-        // --- NEW: Use the dynamic path to save and import ---
         File.WriteAllBytes(fullSavePath, packedTex.EncodeToPNG());
         AssetDatabase.ImportAsset(fullSavePath, ImportAssetOptions.ForceUpdate);
+
+        // Force the packed texture to Linear + no compression so data channels are preserved exactly
+        TextureImporter outputImporter = AssetImporter.GetAtPath(fullSavePath) as TextureImporter;
+        if (outputImporter != null)
+        {
+            outputImporter.sRGBTexture = false;
+            outputImporter.streamingMipmaps = true;
+            outputImporter.SaveAndReimport();
+        }
         
         DestroyImmediate(packedTex);
         EditorUtility.DisplayDialog("Success", $"Texture saved to: {fullSavePath}", "OK");
@@ -242,26 +266,46 @@ public class TextureChannelPacker : EditorWindow
         EnsureReadable(tex);
         if (tex.width == width && tex.height == height) return tex.GetPixels32();
 
-        RenderTexture rt = RenderTexture.GetTemporary(width, height);
+        // FIXED: Force the RenderTexture to be Linear so Graphics.Blit doesn't apply gamma correction
+        RenderTexture rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
         Graphics.Blit(tex, rt);
+        
         RenderTexture previous = RenderTexture.active;
         RenderTexture.active = rt;
-        Texture2D tempTex = new Texture2D(width, height);
+        
+        // FIXED: Force the temporary Texture2D to be read as Linear
+        Texture2D tempTex = new Texture2D(width, height, TextureFormat.RGBA32, false, true); 
         tempTex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
         tempTex.Apply();
+        
         RenderTexture.active = previous;
         RenderTexture.ReleaseTemporary(rt);
+        
         Color32[] pixels = tempTex.GetPixels32();
         DestroyImmediate(tempTex);
         return pixels;
     }
 
+    /*
     private byte GetByte(Color32[] pixels, int index, byte defaultValue, bool invert)
     {
         if (pixels == null) return defaultValue;
         byte val = pixels[index].r;
         return invert ? (byte)(255 - val) : val;
     }
+    */
+
+    private byte GetByte(Color32[] pixels, int index, byte defaultValue, bool invert)
+    {
+        if (pixels == null) return defaultValue;
+        
+        // Some textures store data in Alpha, others in Red. 
+        // This reads the Red channel (Standard for grayscale).
+        byte val = pixels[index].r; 
+        
+        return invert ? (byte)(255 - val) : val;
+    }
+
 
     private void EnsureReadable(Texture2D tex)
     {
