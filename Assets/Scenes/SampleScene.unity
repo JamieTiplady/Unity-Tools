@@ -453,18 +453,6 @@ PrefabInstance:
     m_TransformParent: {fileID: 1100791618}
     m_Modifications:
     - target: {fileID: 2510910069760873000, guid: a2d315aa236ed4687bb0d1dab89357bd, type: 3}
-      propertyPath: m_LocalScale.x
-      value: 0.5
-      objectReference: {fileID: 0}
-    - target: {fileID: 2510910069760873000, guid: a2d315aa236ed4687bb0d1dab89357bd, type: 3}
-      propertyPath: m_LocalScale.y
-      value: 0.5
-      objectReference: {fileID: 0}
-    - target: {fileID: 2510910069760873000, guid: a2d315aa236ed4687bb0d1dab89357bd, type: 3}
-      propertyPath: m_LocalScale.z
-      value: 0.5
-      objectReference: {fileID: 0}
-    - target: {fileID: 2510910069760873000, guid: a2d315aa236ed4687bb0d1dab89357bd, type: 3}
       propertyPath: m_LocalPosition.x
       value: 0
       objectReference: {fileID: 0}
@@ -504,22 +492,10 @@ PrefabInstance:
       propertyPath: m_LocalEulerAnglesHint.z
       value: 0
       objectReference: {fileID: 0}
-    - target: {fileID: 2510910069760873000, guid: a2d315aa236ed4687bb0d1dab89357bd, type: 3}
-      propertyPath: m_ConstrainProportionsScale
-      value: 1
-      objectReference: {fileID: 0}
     - target: {fileID: 2887811822942299299, guid: a2d315aa236ed4687bb0d1dab89357bd, type: 3}
       propertyPath: m_Name
       value: Plane (1)
       objectReference: {fileID: 0}
-    - target: {fileID: 2887811822942299299, guid: a2d315aa236ed4687bb0d1dab89357bd, type: 3}
-      propertyPath: m_IsActive
-      value: 1
-      objectReference: {fileID: 0}
-    - target: {fileID: 3210121845483257444, guid: a2d315aa236ed4687bb0d1dab89357bd, type: 3}
-      propertyPath: 'm_Materials.Array.data[0]'
-      value: 
-      objectReference: {fileID: 2100000, guid: 25001a3e573fbb54eb5e26ecfaeb6b09, type: 2}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
