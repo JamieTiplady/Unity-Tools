@@ -19,7 +19,6 @@ public class ProceduralEnvironmentScatter : MonoBehaviour
         RandomFull
     }
 
-    private const string GeneratedHolderName = "Generated_EnvironmentScatter";
     private const string CombinedHolderName = "Combined_EnvironmentBake";
     private const int MaxCurveSampleAttempts = 100;
 
@@ -29,6 +28,9 @@ public class ProceduralEnvironmentScatter : MonoBehaviour
         public string name = "New Group";
         public GameObject prefab;
         public bool markAsStatic = false;
+        
+        [Tooltip("If true, all meshes in this group will be combined into an optimized batch. If false, they remain independent child assets.")]
+        public bool mergeMeshes = true;
 
         [Range(1, 1000)]
         public int count = 20;
@@ -192,13 +194,13 @@ public class ProceduralEnvironmentScatter : MonoBehaviour
     public string lastScatterReport = "Scatter has not run yet.";
 
     private readonly List<SpawnedItem> _spawnedItems = new List<SpawnedItem>();
+    private readonly HashSet<GameObject> _spawnedRoots = new HashSet<GameObject>();
     private readonly HashSet<GameObject> _objectsToDestroy = new HashSet<GameObject>();
     private readonly List<MeshRenderer> _renderers = new List<MeshRenderer>();
     private readonly List<CombineInstance> _combineInstances = new List<CombineInstance>();
     private readonly Dictionary<BakeKey, List<MeshPart>> _meshPartsByBakeKey = new Dictionary<BakeKey, List<MeshPart>>();
 
     private Collider[] _overlapResults = new Collider[64];
-    private Transform _internalHolder;
     private int _lastSampleCount;
     private int _lastSurfaceHitCount;
     private int _lastSurfaceMissCount;
@@ -248,15 +250,24 @@ public class ProceduralEnvironmentScatter : MonoBehaviour
         if (scatterGroups == null || raycastDistance <= 0f)
             return;
 
-        EnsureHolderExists();
         ClearAllGenerated();
         _spawnedItems.Clear();
+        _spawnedRoots.Clear();
 
         // Raycasts use the physics world, so make sure edited or moved colliders are up to date first.
         Physics.SyncTransforms();
 
         Spline spline = splineContainer.Spline;
         Transform splineTransform = splineContainer.transform;
+
+        // Establish the primary bake holder immediately
+        GameObject combinedHolderObj = new GameObject(CombinedHolderName);
+        Transform combinedHolder = combinedHolderObj.transform;
+        combinedHolder.SetParent(transform, false);
+        ResetLocalTransform(combinedHolder);
+
+        // Track unmerged folders by name so we reuse them if multiple groups share a name
+        Dictionary<string, Transform> unmergedFolders = new Dictionary<string, Transform>();
 
         for (int groupIndex = 0; groupIndex < scatterGroups.Count; groupIndex++)
         {
@@ -266,6 +277,23 @@ public class ProceduralEnvironmentScatter : MonoBehaviour
                 continue;
 
             LocalRandom random = new LocalRandom(unchecked(globalSeed + group.seedOffset));
+
+            // Determine parent up-front based on merge setting
+            Transform itemParent = combinedHolder;
+            if (!group.mergeMeshes)
+            {
+                string groupName = string.IsNullOrEmpty(group.name) ? "Unnamed Group" : group.name;
+                
+                if (!unmergedFolders.TryGetValue(groupName, out itemParent))
+                {
+                    GameObject folderObj = new GameObject(groupName);
+                    itemParent = folderObj.transform;
+                    // Put it right alongside the combined holder (sibling)
+                    itemParent.SetParent(transform, false); 
+                    ResetLocalTransform(itemParent);
+                    unmergedFolders.Add(groupName, itemParent);
+                }
+            }
 
             for (int i = 0; i < group.count; i++)
             {
@@ -292,11 +320,13 @@ public class ProceduralEnvironmentScatter : MonoBehaviour
 
                 _lastSurfaceHitCount++;
 
-                GameObject instance = PlaceObject(group, surfaceHit, worldForward, ref random);
+                // Instantiate directly into the target parent
+                GameObject instance = PlaceObject(group, surfaceHit, worldForward, itemParent, ref random);
 
                 if (instance != null)
                 {
                     _lastSpawnedCount++;
+                    _spawnedRoots.Add(instance);
                     _spawnedItems.Add(new SpawnedItem
                     {
                         instance = instance,
@@ -315,10 +345,12 @@ public class ProceduralEnvironmentScatter : MonoBehaviour
 
         Physics.SyncTransforms();
         RemoveOverlappingObjects();
-        _lastRemainingAfterOverlap = _internalHolder != null ? _internalHolder.childCount : 0;
+        _lastRemainingAfterOverlap = _spawnedItems.Count - _lastOverlapRemovedCount;
 
         if (!keepGeneratedInstances)
-            CombineGeneratedMeshes();
+        {
+            CombineGeneratedMeshes(combinedHolder);
+        }
 
         WriteScatterReport();
     }
@@ -427,9 +459,10 @@ public class ProceduralEnvironmentScatter : MonoBehaviour
         ScatterSettings settings,
         RaycastHit surfaceHit,
         Vector3 splineForward,
+        Transform parent,
         ref LocalRandom random)
     {
-        GameObject instance = InstantiatePrefab(settings.prefab, _internalHolder);
+        GameObject instance = InstantiatePrefab(settings.prefab, parent);
 
         if (instance == null)
             return null;
@@ -588,119 +621,143 @@ public class ProceduralEnvironmentScatter : MonoBehaviour
         }
     }
 
+    // Safely finds the root of our generated objects using the _spawnedRoots HashSet.
+    // This allows objects to be parented anywhere (e.g. side-by-side folders).
     private GameObject GetGeneratedRoot(Transform child)
     {
-        if (child == null || _internalHolder == null)
+        if (child == null)
             return null;
 
         Transform current = child;
-
-        while (current != null && current.parent != _internalHolder)
-            current = current.parent;
-
-        return current != null && current.parent == _internalHolder ? current.gameObject : null;
-    }
-
-    private void EnsureHolderExists()
-    {
-        _internalHolder = transform.Find(GeneratedHolderName);
-
-        if (_internalHolder == null)
+        while (current != null)
         {
-            GameObject holder = new GameObject(GeneratedHolderName);
-            _internalHolder = holder.transform;
-            _internalHolder.SetParent(transform, false);
+            if (_spawnedRoots.Contains(current.gameObject))
+                return current.gameObject;
+            current = current.parent;
         }
 
-        ResetLocalTransform(_internalHolder);
+        return null;
     }
 
     private void ClearAllGenerated()
     {
-        if (_internalHolder != null)
-        {
-            for (int i = _internalHolder.childCount - 1; i >= 0; i--)
-                DestroyObject(_internalHolder.GetChild(i).gameObject);
-        }
-
+        // 1. Clear the combined bake holder
         Transform oldBake = transform.Find(CombinedHolderName);
-
         if (oldBake != null)
         {
             DestroyGeneratedMeshes(oldBake);
             DestroyObject(oldBake.gameObject);
         }
+
+        // 2. Clear out any unmerged group folders that we previously created
+        if (scatterGroups != null)
+        {
+            for (int i = 0; i < scatterGroups.Count; i++)
+            {
+                if (scatterGroups[i] != null && !string.IsNullOrEmpty(scatterGroups[i].name))
+                {
+                    Transform oldGroup = transform.Find(scatterGroups[i].name);
+                    
+                    // Safety check to ensure we don't accidentally delete the combined holder if they share a name
+                    if (oldGroup != null && oldGroup.name != CombinedHolderName)
+                    {
+                        DestroyObject(oldGroup.gameObject);
+                    }
+                }
+            }
+        }
     }
 
-    public void CombineGeneratedMeshes()
+    public void CombineGeneratedMeshes(Transform combinedHolder)
     {
-        if (_internalHolder == null || _internalHolder.childCount == 0)
+        if (combinedHolder == null)
             return;
 
+        // Collect mesh parts explicitly from the items flagged for merging.
         CollectMeshParts();
 
-        if (_meshPartsByBakeKey.Count == 0)
-            return;
-
-        GameObject combinedHolder = new GameObject(CombinedHolderName);
-        combinedHolder.transform.SetParent(transform, false);
-        ResetLocalTransform(combinedHolder.transform);
-
-        foreach (KeyValuePair<BakeKey, List<MeshPart>> pair in _meshPartsByBakeKey)
+        if (_meshPartsByBakeKey.Count > 0)
         {
-            BakeKey key = pair.Key;
-            List<MeshPart> meshParts = pair.Value;
-
-            if (key.material == null || meshParts.Count == 0)
-                continue;
-
-            GameObject combinedObject = new GameObject("Combined_" + key.material.name);
-            combinedObject.transform.SetParent(combinedHolder.transform, false);
-            combinedObject.isStatic = key.markAsStatic;
-            ResetLocalTransform(combinedObject.transform);
-
-            Matrix4x4 worldToLocal = combinedObject.transform.worldToLocalMatrix;
-            _combineInstances.Clear();
-
-            for (int i = 0; i < meshParts.Count; i++)
+            foreach (KeyValuePair<BakeKey, List<MeshPart>> pair in _meshPartsByBakeKey)
             {
-                MeshPart part = meshParts[i];
+                BakeKey key = pair.Key;
+                List<MeshPart> meshParts = pair.Value;
 
-                _combineInstances.Add(new CombineInstance
+                if (key.material == null || meshParts.Count == 0)
+                    continue;
+
+                GameObject combinedObject = new GameObject("Combined_" + key.material.name);
+                combinedObject.transform.SetParent(combinedHolder, false);
+                combinedObject.isStatic = key.markAsStatic;
+                ResetLocalTransform(combinedObject.transform);
+
+                Matrix4x4 worldToLocal = combinedObject.transform.worldToLocalMatrix;
+                _combineInstances.Clear();
+
+                for (int i = 0; i < meshParts.Count; i++)
                 {
-                    mesh = part.mesh,
-                    subMeshIndex = part.subMeshIndex,
-                    transform = worldToLocal * part.localToWorldMatrix
-                });
+                    MeshPart part = meshParts[i];
+
+                    _combineInstances.Add(new CombineInstance
+                    {
+                        mesh = part.mesh,
+                        subMeshIndex = part.subMeshIndex,
+                        transform = worldToLocal * part.localToWorldMatrix
+                    });
+                }
+
+                Mesh combinedMesh = new Mesh
+                {
+                    name = "Mesh_" + key.material.name,
+                    indexFormat = IndexFormat.UInt32
+                };
+
+                combinedMesh.CombineMeshes(_combineInstances.ToArray(), true, true);
+                combinedMesh.RecalculateBounds();
+
+                MeshFilter meshFilter = combinedObject.AddComponent<MeshFilter>();
+                MeshRenderer meshRenderer = combinedObject.AddComponent<MeshRenderer>();
+
+                meshFilter.sharedMesh = combinedMesh;
+                meshRenderer.sharedMaterial = key.material;
+                _lastCombinedMeshCount++;
             }
-
-            Mesh combinedMesh = new Mesh
-            {
-                name = "Mesh_" + key.material.name,
-                indexFormat = IndexFormat.UInt32
-            };
-
-            combinedMesh.CombineMeshes(_combineInstances.ToArray(), true, true);
-            combinedMesh.RecalculateBounds();
-
-            MeshFilter meshFilter = combinedObject.AddComponent<MeshFilter>();
-            MeshRenderer meshRenderer = combinedObject.AddComponent<MeshRenderer>();
-
-            meshFilter.sharedMesh = combinedMesh;
-            meshRenderer.sharedMaterial = key.material;
-            _lastCombinedMeshCount++;
         }
 
-        // Once the combined meshes exist, the individual prefab instances are no longer needed.
-        for (int i = _internalHolder.childCount - 1; i >= 0; i--)
-            DestroyObject(_internalHolder.GetChild(i).gameObject);
+        // Destroy the individual prefab instances that were successfully merged
+        for (int i = 0; i < _spawnedItems.Count; i++)
+        {
+            SpawnedItem item = _spawnedItems[i];
+            
+            if (item.settings.mergeMeshes && item.instance != null)
+            {
+                DestroyObject(item.instance);
+            }
+        }
+
+        // Garbage collection cleanup if absolutely nothing was placed inside the combined holder
+        if (_meshPartsByBakeKey.Count == 0 && combinedHolder.childCount == 0)
+        {
+            DestroyObject(combinedHolder.gameObject);
+        }
     }
 
     private void CollectMeshParts()
     {
         _meshPartsByBakeKey.Clear();
         _renderers.Clear();
-        _internalHolder.GetComponentsInChildren(true, _renderers);
+        
+        // Exclusively fetch renderers from objects in groups marked for merging
+        for (int i = 0; i < _spawnedItems.Count; i++)
+        {
+            SpawnedItem item = _spawnedItems[i];
+            
+            if (item.instance == null || !item.settings.mergeMeshes)
+                continue;
+
+            MeshRenderer[] childRenderers = item.instance.GetComponentsInChildren<MeshRenderer>(true);
+            _renderers.AddRange(childRenderers);
+        }
 
         for (int rendererIndex = 0; rendererIndex < _renderers.Count; rendererIndex++)
         {
